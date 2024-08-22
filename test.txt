@@ -1,0 +1,33 @@
+gcc ngram.c -lm -o ngram
+./ngram
+== Split: train 182448, test 22855, dev 22831
+shape(27, 10) mean: 0.03, min: -2.48, max: 2.10
+shape(32, 30) mean: -0.01, min: -1.47, max: 1.85
+shape(32, 200) mean: -0.00, min: -2.10, max: 2.18
+shape(32, 200) mean: -0.00, min: -0.97, max: 0.97
+shape(32, 27) mean: -0.00, min: -1.69, max: 1.08
+0 / 5 : loss 3.407687
+shape(27, 10) mean: 0.03, min: -2.48, max: 2.10
+shape(32, 30) mean: -nan, min: -1.39, max: 2.10
+shape(32, 200) mean: -nan, min: -2.54, max: 1.94
+shape(32, 200) mean: -nan, min: -1.76, max: 1.88
+shape(32, 27) mean: -nan, min: -2.12, max: 1.55
+1 / 5 : loss nan
+shape(27, 10) mean: 0.03, min: -2.48, max: 2.10
+shape(32, 30) mean: -nan, min: -1.39, max: 2.10
+shape(32, 200) mean: -nan, min: -2.12, max: 1.68
+shape(32, 200) mean: -nan, min: -0.59, max: 0.59
+shape(32, 27) mean: -nan, min: -0.41, max: 0.43
+2 / 5 : loss nan
+shape(27, 10) mean: 0.03, min: -2.48, max: 2.10
+shape(32, 30) mean: -nan, min: -1.39, max: 2.10
+shape(32, 200) mean: -nan, min: -1.88, max: 1.85
+shape(32, 200) mean: -nan, min: -1.19, max: 1.21
+shape(32, 27) mean: -nan, min: -0.83, max: 0.85
+3 / 5 : loss nan
+shape(27, 10) mean: 0.03, min: -2.48, max: 2.10
+shape(32, 30) mean: -nan, min: -1.39, max: 2.10
+shape(32, 200) mean: -nan, min: -2.13, max: 1.72
+shape(32, 200) mean: -nan, min: -1.80, max: 1.83
+shape(32, 27) mean: -nan, min: -1.26, max: 1.27
+4 / 5 : loss nan
