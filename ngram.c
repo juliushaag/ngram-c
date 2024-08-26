@@ -459,14 +459,11 @@ float cross_entropy(int n, matrix_t input, int* Y) {
 
     float sum = 0;
     for (int j = 0; j < logits.shape[1]; j++) {
-      logits.data[i * logits.shape[1] + j] = expf(logits.data[i * logits.shape[1] + j] - max);
-      sum += logits.data[i * logits.shape[1] + j];
+      sum += expf(logits.data[i * logits.shape[1] + j] - max);
+      
     }
 
-    for (int j = 0; j < logits.shape[1]; j++) {
-      logits.data[i * logits.shape[1] + j] = logf(logits.data[i * logits.shape[1] + j] / sum);
-    }
-    probssum += logits.data[i * logits.shape[1] + Y[i]];
+    probssum += logf(expf(logits.data[i * logits.shape[1] + Y[i]] - max) / sum);
   }
 
   mat_free(logits);
