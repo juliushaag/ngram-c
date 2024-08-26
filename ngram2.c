@@ -3,6 +3,7 @@
 #include <string.h>
 #include <assert.h>
 #include <math.h>
+#include <time.h>
 
 /* data */
 
@@ -28,7 +29,7 @@ char** read_names(int* count_out) {
   char** names_ptr = malloc(*count_out * sizeof(char*));
 
   size_t index = 1;
-  for(size_t i = 0; i < length; i++) {
+  for(size_t i = 0; i < length - 1; i++) {
     if (names_buffer[i] == '\n') {
       names_ptr[index++] = names_buffer + i + 1;
       names_buffer[i] = '\0';
@@ -361,7 +362,7 @@ void softmax(int B, int C, float* data) {
   }
 }
 
-int multinomial_single_sample(const float *weights, int n) {
+int multinomial_sample(const float *weights, int n) {
     float total_weight = 0.0f;
     for (int i = 0; i < n; i++) {
         total_weight += weights[i];
@@ -419,6 +420,10 @@ int main() {
   size_t n_dev = build_data_set(names + (int)(names_count * (train_split + test_split)), (int)names_count *  (1 - test_split - train_split), n_context, &Xdev, &Ydev); // 10%
 
   printf("== Split: train %li, test %li, dev %li\n", n_train, n_test, n_dev);
+
+  clock_t clock_start, clock_end;
+  clock_start = clock();
+ 
 
   /* model definition */
 
@@ -490,6 +495,8 @@ int main() {
       { "Bias 2", b2, db2 },
   };
 
+  float running_loss = 0.0f;
+
   printf("== Training for %i steps\n", steps);
   for (int step = 0; step < steps; step++) {
 
@@ -513,6 +520,8 @@ int main() {
     linear_forward(bs, n_hidden, N_VOCAB, h, W2, b2, logits);
 
     float loss = cross_entropy(bs, N_VOCAB, logits, Y);
+
+    running_loss += loss;
 
     /* backward pass */
 
@@ -538,22 +547,39 @@ int main() {
 
     }
 
-    if (step % 100 == 0) printf("%i / %i : loss %f\n", step, steps, loss);
-
+    if (step % 100 == 0) {
+      printf("%i / %i : loss %f\n", step, steps, running_loss / (step ? 100 : 1));
+      running_loss = 0.0f;
+    }
     if (step == 10000) lr = 0.01;
   }
 
+  clock_end = clock();
+  double cpu_time_used = ((double) (clock_end - clock_start)) / CLOCKS_PER_SEC;
+
+  printf("== Time used %f, step/s: %f\n", cpu_time_used, (float)steps / cpu_time_used);
+
+
   // Calculate test loss
 
-  emb_forward(N_VOCAB, n_embd, bs, n_context, emb, Xte, embcat);
+  
+  embcat = zeros_buffer(n_test * n_context * n_embd);
 
-  linear_forward(bs, n_embd * n_context, n_hidden, embcat, W1, b1, hpreact);
+  hpreact = zeros_buffer(n_test * n_hidden);
+  
+  h = zeros_buffer(n_test * n_hidden);
 
-  tanh_forward(bs, n_hidden, hpreact, h);
+  logits = zeros_buffer(n_test * N_VOCAB);
 
-  linear_forward(bs, n_hidden, N_VOCAB, h, W2, b2, logits);
+  emb_forward(N_VOCAB, n_embd, n_test, n_context, emb, Xte, embcat);
 
-  float loss = cross_entropy(bs, N_VOCAB, logits, Yte);  
+  linear_forward(n_test, n_embd * n_context, n_hidden, embcat, W1, b1, hpreact);
+
+  tanh_forward(n_test, n_hidden, hpreact, h);
+
+  linear_forward(n_test, n_hidden, N_VOCAB, h, W2, b2, logits);
+
+  float loss = cross_entropy(n_test, N_VOCAB, logits, Yte);  
 
   printf("== Test loss: %f\n", loss);
   
@@ -579,7 +605,7 @@ int main() {
 
       softmax(1, N_VOCAB, logits);
 
-      index = multinomial_single_sample(logits, N_VOCAB);
+      index = multinomial_sample(logits, N_VOCAB);
 
       putchar(itos(index));
       for (int i = 0; i < n_context - 1; i++) {
