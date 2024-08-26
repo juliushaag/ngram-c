@@ -406,7 +406,7 @@ int main() {
   float test_split = 0.1;
   
   const int n_context = 5;
-  const int n_embd = 10;
+  const int n_embd = 16;
   const int n_hidden = 200;
 
   int* Xtr, *Ytr = NULL;
@@ -451,10 +451,10 @@ int main() {
 
   /* Training */
   
-#define bs 32
-#define steps 2000
   
+  int bs = 32;
   float lr = 0.1;
+  int steps = 10000;
 
   /* model buffers */
 
@@ -480,17 +480,17 @@ int main() {
   int *X = malloc(sizeof(int) * bs * n_context);
   int *Y = malloc(sizeof(int) * bs * 1        );
 
-  void* grad_buffers[][3] = {
-      { "Embedding", emb, demb},
+  void* optim_buffers[][3] = {
+      { "Embedding", emb, demb },
       
-      { "Weights 1", W1, dW1},
-      { "Bias 1", b1, db1},
+      { "Weights 1", W1, dW1 },
+      { "Bias 1", b1, db1 },
       
-      { "Weights 2", W2, dW2},
-      { "Bias 2", b2, db2},
+      { "Weights 2", W2, dW2 },
+      { "Bias 2", b2, db2 },
   };
 
-
+  printf("== Training for %i steps\n", steps);
   for (int step = 0; step < steps; step++) {
 
     for (int i = 0; i < bs; i++) {
@@ -527,10 +527,10 @@ int main() {
     emb_backward(N_VOCAB, n_embd, bs, n_context, X, dembcat, demb);
 
 
-    for (int i = 0; i < sizeof(grad_buffers) / (sizeof(void*) * 3); i++) {
-      char* name = (char*)grad_buffers[i][0];
-      float* weights = (float*)grad_buffers[i][1];
-      float* grads = (float*)grad_buffers[i][2];
+    for (int i = 0; i < sizeof(optim_buffers) / (sizeof(void*) * 3); i++) {
+      char* name = (char*)optim_buffers[i][0];
+      float* weights = (float*)optim_buffers[i][1];
+      float* grads = (float*)optim_buffers[i][2];
 
       for (int j = 0; j < weights[-1]; j++) {
         weights[j] += -lr * grads[j];
@@ -538,8 +538,7 @@ int main() {
 
     }
 
-    if (step % 100 == 0)
-      printf("%i / %i : loss %f\n", step, steps, loss);
+    if (step % 100 == 0) printf("%i / %i : loss %f\n", step, steps, loss);
 
     if (step == 10000) lr = 0.01;
   }
@@ -556,12 +555,12 @@ int main() {
 
   float loss = cross_entropy(bs, N_VOCAB, logits, Yte);  
 
-  printf("Test loss: %f\n", loss);
+  printf("== Test loss: %f\n", loss);
   
   // Generate examples
 
   int n_gen = 10;
-  printf("Generating %i examples\n", n_gen);
+  printf("== Generating %i examples\n", n_gen);
 
   int* context = malloc(n_context * sizeof(int));
 
