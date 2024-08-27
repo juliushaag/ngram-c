@@ -381,6 +381,123 @@ int multinomial_sample(const float *weights, int n) {
     assert(0); // This should never happen
 }
 
+typedef struct ngram_model {
+  
+  int n_embd, n_hidden, n_context, n_batch;
+  // Model parameters
+  float* Emb;
+  float* W1, *b1;
+  float* W2, *b2;
+  // Gradients
+  float* dEmb;
+  float* dW1, *db1;
+  float* dW2, *db2;
+  // Running buffers
+  float *embcat;
+  float *hpreact;
+  float *h;
+  float *logits;
+  // Running grads
+  float *dlogits;  
+  float *dh;
+  float *dhpreact;
+  float *dembcat;
+
+  void* optim_buffers;
+} ngram_model;
+
+void model_init(ngram_model* model, int n_embd, int n_hidden, int n_context) {
+  
+  model->Emb = randn_buffer(N_VOCAB * n_embd);
+
+  model->W1 = randn_buffer(n_context * n_embd * n_hidden);
+  mul_buffer(model->W1, (5/3) / sqrt(n_context * n_embd));
+
+  model->b1 = randn_buffer(n_hidden);
+  mul_buffer(model->b1, 0.01);
+
+  
+  model->W2 = randn_buffer(n_hidden * N_VOCAB);
+  mul_buffer(model->W2, 1 / sqrt(n_hidden));
+
+  model->b2 = randn_buffer(N_VOCAB);
+  mul_buffer(model->b2, 0.01);
+  
+  model->dEmb = zeros_buffer(N_VOCAB * n_embd);
+
+  model->dW1 = zeros_buffer(n_context * n_embd * n_hidden);
+  model->db1 = zeros_buffer(n_hidden);
+  
+  model->dW2 = zeros_buffer(n_hidden * N_VOCAB);
+  model->db2 = zeros_buffer(N_VOCAB);
+
+  
+  model->n_embd = n_embd;
+  model->n_hidden = n_hidden;
+  model->n_context = n_context;  
+}
+
+void model_prepare_run(ngram_model* model, int batch_size) {
+  
+  model->embcat = zeros_buffer(batch_size * model->n_context * model->n_embd);
+  model->hpreact = zeros_buffer(batch_size * model->n_hidden);
+  model->h = zeros_buffer(batch_size * model->n_hidden);
+  model->logits = zeros_buffer(batch_size * N_VOCAB);
+
+  
+  model->dlogits = zeros_buffer(batch_size * N_VOCAB);  
+  model->dh = zeros_buffer(batch_size * model->n_hidden);
+  model->dhpreact = zeros_buffer(batch_size * model->n_hidden);
+  model->dembcat = zeros_buffer(batch_size * model->n_context * model->n_embd);
+
+  model->n_batch = batch_size;
+}
+
+float* forward(ngram_model* model, int* X) {
+
+  emb_forward(N_VOCAB, model->n_embd, model->n_batch, model->n_context, model->Emb, X, model->embcat);
+
+  linear_forward(model->n_batch, model->n_embd * model->n_context, model->n_hidden, model->embcat, model->W1, model->b1, model->hpreact);
+
+  tanh_forward(model->n_batch, model->n_hidden, model->hpreact, model->h);
+
+  linear_forward(model->n_batch, model->n_hidden, N_VOCAB, model->h, model->W2, model->b2, model->logits);
+  
+  return model->logits;
+}
+
+void backward(ngram_model* model, int* X, int* Y) {
+
+  cross_entropy_backward(model->n_batch, N_VOCAB, model->logits, Y, model->dlogits);
+
+  linear_backward(model->n_batch, model->n_hidden, N_VOCAB, model->h, model->dlogits, model->W2, model->dW2, model->db2, model->dh);
+
+  tanh_backward(model->n_batch, model->n_hidden, model->dh, model->h, model->dhpreact);
+
+  linear_backward(model->n_batch, model->n_embd * model->n_context, model->n_hidden, model->embcat, model->dhpreact, model->W1, model->dW1, model->db1, model->dembcat);
+
+  emb_backward(N_VOCAB, model->n_embd, model->n_batch, model->n_context, X, model->dembcat, model->dEmb);
+
+}
+
+void optimize(ngram_model* model, float lr) {
+
+  for(int i = 0; i < N_VOCAB * model->n_embd; i++) 
+    model->Emb[i] += -lr * model->dEmb[i];
+
+  for(int i = 0; i < model->n_context * model->n_embd * model->n_hidden; i++) 
+    model->W1[i] += -lr * model->dW1[i];
+
+  for(int i = 0; i < model->n_hidden; i++) 
+    model->b1[i] += -lr * model->db1[i];
+
+  for(int i = 0; i < model->n_hidden * N_VOCAB; i++) 
+    model->W2[i] += -lr * model->dW2[i];
+
+  for(int i = 0; i < N_VOCAB; i++) 
+    model->b2[i] += -lr * model->db2[i];
+}
+
 #ifndef TEST
 
 int main() {
@@ -402,13 +519,19 @@ int main() {
     names[switch_index] = tmp;
   }
 
-
-  float train_split = 0.8;
-  float test_split = 0.1;
+  /* model definition */
   
   const int n_context = 5;
   const int n_embd = 16;
   const int n_hidden = 200;
+
+  ngram_model model;
+  model_init(&model, n_embd, n_hidden, n_context);
+
+  /* Processing data */
+
+  float train_split = 0.8;
+  float test_split = 0.1;
 
   int* Xtr, *Ytr = NULL;
   size_t n_train = build_data_set(names, (int)(names_count * train_split), n_context, &Xtr, &Ytr); // 80%
@@ -423,35 +546,6 @@ int main() {
 
   clock_t clock_start, clock_end;
   clock_start = clock();
- 
-
-  /* model definition */
-
-  float *emb = randn_buffer(N_VOCAB * n_embd);
-
-  float *W1 = randn_buffer(n_context * n_embd * n_hidden);
-  mul_buffer(W1, 1 / sqrt(n_context * n_embd));
-
-  float *b1 = randn_buffer(n_hidden);
-  mul_buffer(b1, 0.01);
-
-  
-  float *W2 = randn_buffer(n_hidden * N_VOCAB);
-  mul_buffer(W2, 1 / sqrt(n_hidden));
-
-  float *b2 = randn_buffer(N_VOCAB);
-  mul_buffer(b2, 0.01);
-
-  /* model grads */
-
-  float *demb = zeros_buffer(N_VOCAB * n_embd);
-
-  float *dW1 = zeros_buffer(n_context * n_embd * n_hidden);
-  float *db1 = zeros_buffer(n_hidden);
-
-  
-  float *dW2 = zeros_buffer(n_hidden * N_VOCAB);
-  float *db2 = zeros_buffer(N_VOCAB);
 
 
   /* Training */
@@ -461,39 +555,11 @@ int main() {
   float lr = 0.1;
   int steps = 10000;
 
-  /* model buffers */
-
-  float *embcat = zeros_buffer(bs * n_context * n_embd);
-
-  float *hpreact = zeros_buffer(bs * n_hidden);
-  
-  float *h = zeros_buffer(bs * n_hidden);
-
-  float *logits = zeros_buffer(bs * N_VOCAB);
-
-  /* model buffer grads */
-
-  float *dlogits = zeros_buffer(bs * N_VOCAB);
-  
-  float *dh = zeros_buffer(bs * n_hidden);
-
-  float *dhpreact = zeros_buffer(bs * n_hidden);
-
-  float *dembcat = zeros_buffer(bs * n_context * n_embd);
-
+  model_prepare_run(&model, bs);
 
   int *X = malloc(sizeof(int) * bs * n_context);
   int *Y = malloc(sizeof(int) * bs * 1        );
 
-  void* optim_buffers[][3] = {
-      { "Embedding", emb, demb },
-      
-      { "Weights 1", W1, dW1 },
-      { "Bias 1", b1, db1 },
-      
-      { "Weights 2", W2, dW2 },
-      { "Bias 2", b2, db2 },
-  };
 
   float running_loss = 0.0f;
 
@@ -509,76 +575,32 @@ int main() {
     }
     
 
-    /* forward pass */
-
-    emb_forward(N_VOCAB, n_embd, bs, n_context, emb, X, embcat);
-
-    linear_forward(bs, n_embd * n_context, n_hidden, embcat, W1, b1, hpreact);
-
-    tanh_forward(bs, n_hidden, hpreact, h);
-
-    linear_forward(bs, n_hidden, N_VOCAB, h, W2, b2, logits);
+    float* logits = forward(&model, X);
 
     float loss = cross_entropy(bs, N_VOCAB, logits, Y);
-
     running_loss += loss;
 
-    /* backward pass */
+    backward(&model, X, Y);
 
-    cross_entropy_backward(bs, N_VOCAB, logits, Y, dlogits);
+    optimize(&model, lr);
 
-    linear_backward(bs, n_hidden, N_VOCAB, h, dlogits, W2, dW2, db2, dh);
-
-    tanh_backward(bs, n_hidden, dh, h, dhpreact);
-
-    linear_backward(bs, n_embd * n_context, n_hidden, embcat, dhpreact, W1, dW1, db1, dembcat);
-
-    emb_backward(N_VOCAB, n_embd, bs, n_context, X, dembcat, demb);
-
-
-    for (int i = 0; i < sizeof(optim_buffers) / (sizeof(void*) * 3); i++) {
-      char* name = (char*)optim_buffers[i][0];
-      float* weights = (float*)optim_buffers[i][1];
-      float* grads = (float*)optim_buffers[i][2];
-
-      for (int j = 0; j < weights[-1]; j++) {
-        weights[j] += -lr * grads[j];
-      }
-
-    }
-
-    if (step % 100 == 0) {
-      printf("%i / %i : loss %f\n", step, steps, running_loss / (step ? 100 : 1));
+    if (step % 1000 == 0) {
+      printf("%i / %i : loss %f\n", step, steps, running_loss / (step ? 1000 : 1));
       running_loss = 0.0f;
     }
-    if (step == 10000) lr = 0.01;
+    if (step == 10000) lr = 0.01; // lr decay
   }
 
   clock_end = clock();
   double cpu_time_used = ((double) (clock_end - clock_start)) / CLOCKS_PER_SEC;
 
-  printf("== Time used %f, step/s: %f\n", cpu_time_used, (float)steps / cpu_time_used);
+  printf("== Time used %.2fs, step/s: %.2f\n", cpu_time_used, (float)steps / cpu_time_used);
 
 
   // Calculate test loss
+  model_prepare_run(&model, n_test);
 
-  
-  embcat = zeros_buffer(n_test * n_context * n_embd);
-
-  hpreact = zeros_buffer(n_test * n_hidden);
-  
-  h = zeros_buffer(n_test * n_hidden);
-
-  logits = zeros_buffer(n_test * N_VOCAB);
-
-  emb_forward(N_VOCAB, n_embd, n_test, n_context, emb, Xte, embcat);
-
-  linear_forward(n_test, n_embd * n_context, n_hidden, embcat, W1, b1, hpreact);
-
-  tanh_forward(n_test, n_hidden, hpreact, h);
-
-  linear_forward(n_test, n_hidden, N_VOCAB, h, W2, b2, logits);
-
+  float* logits = forward(&model, Xte);
   float loss = cross_entropy(n_test, N_VOCAB, logits, Yte);  
 
   printf("== Test loss: %f\n", loss);
@@ -588,6 +610,8 @@ int main() {
   int n_gen = 10;
   printf("== Generating %i examples\n", n_gen);
 
+  
+  model_prepare_run(&model, 1);
   int* context = malloc(n_context * sizeof(int));
 
   for (int i = 0; i < n_gen; i++) {
@@ -595,13 +619,7 @@ int main() {
     memset(context, 0, n_context * sizeof(int));
     while (index) {
 
-      emb_forward(N_VOCAB, n_embd, 1, n_context, emb, context, embcat);
-
-      linear_forward(1, n_embd * n_context, n_hidden, embcat, W1, b1, hpreact);
-
-      tanh_forward(1, n_hidden, hpreact, h);
-
-      linear_forward(1, n_hidden, N_VOCAB, h, W2, b2, logits);
+      float* logits = forward(&model, context);
 
       softmax(1, N_VOCAB, logits);
 

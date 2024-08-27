@@ -95,5 +95,5 @@ dh = torch.zeros_like(h)
 linear_backward = ngram["linear_backward"]
 linear_backward(n_batch, n_hidden, n_vocab, tc(h), tc(dlogits), tc(W2), tc(dW2), tc(db2), tc(dh))
 
-assert torch.allclose(db2, b2.grad, atol=0.0001)
-assert torch.allclose(dW2, W2.grad, atol=0.0001)
+assert torch.allclose(db2, b2.grad)
+assert torch.allclose(dW2, W2.grad)
