@@ -6,7 +6,7 @@
 #include <time.h>
 #include <omp.h>
 
-/* data */
+/* Data */
 
 char** read_names(int* count_out) {
 
@@ -20,10 +20,11 @@ char** read_names(int* count_out) {
   
   rewind(names);
 
-  char* names_buffer = malloc(length + 1);
+  char* names_buffer = calloc(length + 1, sizeof(char));
 
   fread(names_buffer, sizeof(char), length, names);
 
+  fclose(names);
 
   for(size_t i = 0; i < length; i++) {
     if (names_buffer[i] == '\n') (*count_out)++;
@@ -72,10 +73,10 @@ size_t build_data_set(char** names, size_t n_names, int n_context, int **X, int 
     char* name = names[i];
     int name_length = strlen(name);
 
-    assert(name_length < 128);
+    assert(name_length < 32);
 
 
-    int context_buffer[128] = { 0 };
+    int context_buffer[32] = { 0 };
     int* context = context_buffer;
     for (int j = 0; j < name_length; j++) {
       int ix = stoi(name[j]);
@@ -141,10 +142,11 @@ void linear_backward(int B, int C, int D,
   #pragma omp parallel for collapse(2)
   for (int i = 0; i < B; i++) {
     for (int j = 0; j < C; j++) {
-      dinput[i * C + j] = 0.0f;
+      float mulacc = 0.0f;
       for (int k = 0; k < D; k++) {
-        dinput[i * C + j] += dout[i * D + k] * weights[j * D + k];
+        mulacc += dout[i * D + k] * weights[j * D + k];
       }
+      dinput[i * C + j] = mulacc;
     }   
   }
 
@@ -158,19 +160,21 @@ void linear_backward(int B, int C, int D,
   #pragma omp parallel for collapse(2)
   for (int i = 0; i < C; i++) {
     for (int j = 0; j < D; j++) {
-      dweight[i * D + j] = 0.0f; 
+      float mulacc = 0.0f;
       for (int k = 0; k < B; k++) {
-        dweight[i * D + j] += input[k * C + i] * dout[k * D + j];
+        mulacc += input[k * C + i] * dout[k * D + j];
       }
+      dweight[i * D + j] = mulacc; 
     }   
   }
 
   #pragma omp parallel for
   for (int i = 0; i < D; i++) {
-    dbias[i] = 0.0;
+    float sum = 0.0f;
     for (int k = 0; k < B; k++) {
-      dbias[i] += dout[k * D + i];
+      sum += dout[k * D + i];
     }
+    dbias[i] = sum;
   }
 }
 
@@ -178,11 +182,9 @@ void tanh_forward(int B, int C, const float* inp, float* out) {
   /*
   inp (B, C)
   */
-  #pragma omp parallel for collapse(2)
-  for (int i = 0; i < B; i++) {
-    for (int j = 0; j < C; j++) {
-      out[i * C + j] = tanh(inp[i * C + j]);
-    }
+  #pragma omp parallel for
+  for (int i = 0; i < B * C; i++) {
+    out[i] = tanhf(inp[i]);
   }
 } 
 
@@ -190,11 +192,9 @@ void tanh_backward(int B, int C, const float *doutput, const float *out, float *
   /*
   doutput, dinput, out (B, C)
   */
-  #pragma omp parallel for collapse(2)
-  for (int i = 0; i < B; i++) {
-    for (int j = 0; j < C; j++) {
-      dinput[i * C + j] = (1.0 - out[i * C + j] * out[i * C + j]) * doutput[i * C + j];
-    }
+  #pragma omp parallel for
+  for (int i = 0; i < B * C; i++) {
+    dinput[i] = (1.0 - out[i] * out[i]) * doutput[i];
   }
 } 
 
@@ -236,9 +236,6 @@ float cross_entropy(int B, int C, const float* input, const int* Y) {
   Y (B)
   */
  
-  omp_lock_t plock;
-  omp_init_lock(&plock);
-
   float probssum = 0.0f;
   #pragma omp parallel for 
   for (int i = 0; i < B; i++) {
@@ -251,16 +248,15 @@ float cross_entropy(int B, int C, const float* input, const int* Y) {
 
     float sum = 0.0f; 
     for (int j = 0; j < C; j++) {
-      sum += exp(input[i * C + j] - max);
+      sum += expf(input[i * C + j] - max);
     }
     
-    omp_set_lock(&plock);
-    probssum += log(exp(input[i * C + Y[i]] - max)  / sum);
-    omp_unset_lock(&plock);
+    float probs = logf(expf(input[i * C + Y[i]] - max)) - logf(sum);
+    #pragma omp critical
+    {
+      probssum += probs;
+    }
   }
-
-  
-  omp_destroy_lock(&plock);
   return -(probssum / (float)B);
 }
 
@@ -273,23 +269,16 @@ void cross_entropy_backward(int B, int C, const float* logits, const int* Y, flo
   */
   #pragma omp parallel for
   for (int i = 0; i < B; i++) {
-    float sum = 0.0f;
+    int selected_index = Y[i];
 
+    float sum = 0.0f;
     for (int j = 0; j < C; j++) {
-      sum += exp(logits[i * C + j]); 
+      sum += expf(logits[i * C + j]); 
     } 
     
     for (int j = 0; j < C; j++) {
-      dlogits[i * C + j] = exp(logits[i * C + j]) / (sum);
+      dlogits[i * C + j] = ((expf(logits[i * C + j]) / sum) - (j == selected_index)) / (float)B;
     }
-
-    dlogits[i * C + Y[i]] -= 1;
-  }
-
-  
-  #pragma omp parallel for
-  for (int i = 0; i < C*B; i++) {
-    dlogits[i] /= (float)B;  
   }
 }
 
@@ -312,8 +301,7 @@ int multinomial_sample(const float *weights, int n) {
         total_weight += weights[i];
     }
 
-    float random_value = ((float)rand() / RAND_MAX) * total_weight;
-    
+    float random_value = ((float)rand() / (float)RAND_MAX) * total_weight;
     float cumulative_weight = 0.0f;
     for (int i = 0; i < n; i++) {
         cumulative_weight += weights[i];
@@ -506,6 +494,7 @@ void optimize(ngram_model* model, float lr) {
     model->b2[i] += -lr * model->db2[i];
 }
 
+
 #ifndef TEST
 
 int main() {
@@ -541,14 +530,13 @@ int main() {
   model_init(&model, n_embd, n_hidden, n_context);
 
   /* Processing data */
-  float train_split = 0.8;
-  float test_split = 0.2;
+  float train_split = 0.9;
 
-  int *Xtr, *Ytr = NULL;
-  size_t n_train = build_data_set(names, (int)(names_count * train_split), n_context, &Xtr, &Ytr); // 80%
+  int *Xtr, *Ytr;
+  size_t n_train = build_data_set(names, (int)(names_count * train_split), n_context, &Xtr, &Ytr); // 90%
 
-  int *Xte, *Yte = NULL;
-  size_t n_test = build_data_set(names + (int)(names_count * train_split), (int)names_count * test_split, n_context, &Xte, &Yte); // 10%
+  int *Xte, *Yte;
+  size_t n_test = build_data_set(names + (int)(names_count * train_split), (int)names_count * (1 - train_split), n_context, &Xte, &Yte); // 10%
 
   printf("== Split: train %li, test %li\n", n_train, n_test);
 
@@ -591,6 +579,7 @@ int main() {
       running_loss = 0.0f;
     }
     if (step == 10000) lr = 0.01; // lr decay
+    if (step == 50000) lr = 0.005; // lr decay
   }  
   
   free(X);

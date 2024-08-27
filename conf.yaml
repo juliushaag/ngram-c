@@ -1,0 +1,10 @@
+// Model conf
+n_context: 5
+n_embd: 16
+n_hidden: 200
+
+// Training
+train_split: 0.9
+batch_size: 32
+lr: 0.1
+n_steps: 5000
