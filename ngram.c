@@ -4,6 +4,7 @@
 #include <assert.h>
 #include <math.h>
 #include <time.h>
+#include <omp.h>
 
 /* data */
 
@@ -113,7 +114,8 @@ void linear_forward(int B, int C, int D,
   weights (C, D)
   bias    (1, D)
   -> out  (B, D)
-  */
+  */ 
+  #pragma omp parallel for collapse(2)
   for (int i = 0; i < B; i++) {
     for (int j = 0; j < D; j++) {
       float mulacc = bias ? bias[j] : 0.0f;
@@ -136,6 +138,7 @@ void linear_backward(int B, int C, int D,
   -> out  (B, D)
   */
   // dinput = dout @ weights^T
+  #pragma omp parallel for collapse(2)
   for (int i = 0; i < B; i++) {
     for (int j = 0; j < C; j++) {
       dinput[i * C + j] = 0.0f;
@@ -152,6 +155,7 @@ void linear_backward(int B, int C, int D,
   dweights (C, D)
   */
   // dweights = input^T @ dout
+  #pragma omp parallel for collapse(2)
   for (int i = 0; i < C; i++) {
     for (int j = 0; j < D; j++) {
       dweight[i * D + j] = 0.0f; 
@@ -161,6 +165,7 @@ void linear_backward(int B, int C, int D,
     }   
   }
 
+  #pragma omp parallel for
   for (int i = 0; i < D; i++) {
     dbias[i] = 0.0;
     for (int k = 0; k < B; k++) {
@@ -173,9 +178,10 @@ void tanh_forward(int B, int C, const float* inp, float* out) {
   /*
   inp (B, C)
   */
+  #pragma omp parallel for collapse(2)
   for (int i = 0; i < B; i++) {
     for (int j = 0; j < C; j++) {
-        out[i * C + j] = tanh(inp[i * C + j]);
+      out[i * C + j] = tanh(inp[i * C + j]);
     }
   }
 } 
@@ -184,6 +190,7 @@ void tanh_backward(int B, int C, const float *doutput, const float *out, float *
   /*
   doutput, dinput, out (B, C)
   */
+  #pragma omp parallel for collapse(2)
   for (int i = 0; i < B; i++) {
     for (int j = 0; j < C; j++) {
       dinput[i * C + j] = (1.0 - out[i * C + j] * out[i * C + j]) * doutput[i * C + j];
@@ -197,6 +204,7 @@ void emb_forward(int B, int C, int I, int T, const float* emb, const int* X, flo
   X (I, T)
   out (I, C * T)
   */
+  #pragma omp parallel for collapse(2)
   for (int i = 0; i < I; i++) {
     for (int t = 0; t < T; t++) {
       memcpy(out + i * C * T + C * t, emb + X[i * T + t] * C, C * sizeof(float));
@@ -206,7 +214,7 @@ void emb_forward(int B, int C, int I, int T, const float* emb, const int* X, flo
 
 
 void emb_backward(int B, int C, int I, int T, const int* X, const float* dout, float* demb){
-    /*
+  /*
   emb (B, C)
   X (I, T)
   dout (I, C * T)
@@ -227,7 +235,12 @@ float cross_entropy(int B, int C, const float* input, const int* Y) {
   input (B, C)
   Y (B)
   */
+ 
+  omp_lock_t plock;
+  omp_init_lock(&plock);
+
   float probssum = 0.0f;
+  #pragma omp parallel for 
   for (int i = 0; i < B; i++) {
     float max = 0.0f;
     for (int j = 0; j < C; j++) {
@@ -240,9 +253,14 @@ float cross_entropy(int B, int C, const float* input, const int* Y) {
     for (int j = 0; j < C; j++) {
       sum += exp(input[i * C + j] - max);
     }
-
+    
+    omp_set_lock(&plock);
     probssum += log(exp(input[i * C + Y[i]] - max)  / sum);
+    omp_unset_lock(&plock);
   }
+
+  
+  omp_destroy_lock(&plock);
   return -(probssum / (float)B);
 }
 
@@ -253,8 +271,10 @@ void cross_entropy_backward(int B, int C, const float* logits, const int* Y, flo
   dlogits (B, C)
   Y (B)
   */
+  #pragma omp parallel for
   for (int i = 0; i < B; i++) {
     float sum = 0.0f;
+
     for (int j = 0; j < C; j++) {
       sum += exp(logits[i * C + j]); 
     } 
@@ -266,6 +286,8 @@ void cross_entropy_backward(int B, int C, const float* logits, const int* Y, flo
     dlogits[i * C + Y[i]] -= 1;
   }
 
+  
+  #pragma omp parallel for
   for (int i = 0; i < C*B; i++) {
     dlogits[i] /= (float)B;  
   }
@@ -461,19 +483,25 @@ void backward(ngram_model* model, int* X, int* Y) {
 }
 
 void optimize(ngram_model* model, float lr) {
-
+  
+  #pragma omp parallel for
   for(int i = 0; i < N_VOCAB * model->n_embd; i++) 
     model->Emb[i] += -lr * model->dEmb[i];
 
+  #pragma omp parallel for
   for(int i = 0; i < model->n_context * model->n_embd * model->n_hidden; i++) 
     model->W1[i] += -lr * model->dW1[i];
 
+  
+  #pragma omp parallel for
   for(int i = 0; i < model->n_hidden; i++) 
     model->b1[i] += -lr * model->db1[i];
 
+  #pragma omp parallel for
   for(int i = 0; i < model->n_hidden * N_VOCAB; i++) 
     model->W2[i] += -lr * model->dW2[i];
-
+  
+  #pragma omp parallel for
   for(int i = 0; i < N_VOCAB; i++) 
     model->b2[i] += -lr * model->db2[i];
 }
@@ -505,7 +533,6 @@ int main() {
   }
 
   /* model definition */
-  
   const int n_context = 5;
   const int n_embd = 16;
   const int n_hidden = 200;
@@ -517,15 +544,13 @@ int main() {
   float train_split = 0.8;
   float test_split = 0.2;
 
-  int* Xtr, *Ytr = NULL;
+  int *Xtr, *Ytr = NULL;
   size_t n_train = build_data_set(names, (int)(names_count * train_split), n_context, &Xtr, &Ytr); // 80%
 
-  int* Xte, *Yte = NULL;
+  int *Xte, *Yte = NULL;
   size_t n_test = build_data_set(names + (int)(names_count * train_split), (int)names_count * test_split, n_context, &Xte, &Yte); // 10%
 
   printf("== Split: train %li, test %li\n", n_train, n_test);
-
-  clock_t clock_start = clock();
 
 
   /* Training */
@@ -541,13 +566,14 @@ int main() {
 
 
   float running_loss = 0.0f;
+  time_t training_start;
+  time(&training_start);
+
   for (int step = 0; step < steps; step++) {
 
     for (int i = 0; i < bs; i++) {
       int ix = rand() % n_train;
-      for (int j = 0; j < n_context; j++) {
-        X[i * n_context + j] = Xtr[ix * n_context + j];
-      }
+      memcpy(X + i * n_context, Xtr + ix * n_context, n_context * sizeof(int));
       Y[i] = Ytr[ix];
     }
     
@@ -573,10 +599,12 @@ int main() {
   free(Xtr);
   free(Ytr);
 
-  clock_t clock_end = clock();
-  double cpu_time_used = ((double) (clock_end - clock_start)) / CLOCKS_PER_SEC;
+  time_t training_end;
+  time(&training_end);
 
-  printf("== Time used %.2fs, step/s: %.2f\n", cpu_time_used, (float)steps / cpu_time_used);
+  double cpu_time_used = difftime(training_end, training_start);
+
+  printf("== Time used %.2fs, steps/s: %.2f\n", cpu_time_used, (float)steps / cpu_time_used);
 
 
   // Calculate test loss
